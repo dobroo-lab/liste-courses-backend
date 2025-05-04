@@ -2,15 +2,50 @@
 
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
+const cors = require('cors'); // Garde le require de cors
 const pool = require('./db');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(cors());
+// --- Début Configuration CORS Spécifique ---
+const allowedOrigins = [
+    'https://liste-courses.netlify.app', // Ton frontend déployé sur Netlify
+    // Ajoute ici d'autres origines si tu en as besoin un jour
+];
+
+// Autorise aussi localhost pour le développement local
+// Vérifie que 5173 est bien le port utilisé par 'npm run dev' pour ton frontend
+// (C'est le port par défaut pour Vite/Vue3)
+if (process.env.NODE_ENV !== 'production') {
+    allowedOrigins.push('http://localhost:5173');
+}
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Autorise les requêtes sans 'origin' (ex: Postman, curl, apps mobiles)
+    // OU les requêtes venant des origines explicitement autorisées
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true); // Autorisé
+    } else {
+      // Log l'origine bloquée pour le débogage
+      console.warn(`Origine non autorisée bloquée par CORS: ${origin}`);
+      callback(new Error('Not allowed by CORS')); // Non autorisé
+    }
+  },
+  methods: 'GET,HEAD,PUT,PATCH,POST,DELETE', // Méthodes HTTP autorisées
+  // credentials: true, // À décommenter seulement si tu utilises des cookies/sessions cross-origin
+  optionsSuccessStatus: 204 // Pour compatibilité avec certains navigateurs anciens
+};
+
+// Applique le middleware CORS avec les options configurées
+app.use(cors(corsOptions));
+// --- Fin Configuration CORS Spécifique ---
+
+// Middleware pour parser le JSON (doit venir après CORS si tu as des pré-vérifications OPTIONS)
 app.use(express.json());
 
+// Route de bienvenue simple
 app.get('/', (req, res) => {
   res.send('Bienvenue sur l\'API de la Liste de Courses Familiale !');
 });
@@ -128,14 +163,9 @@ app.get('/api/lists', async (req, res) => {
     res.status(500).json({ message: 'Erreur interne du serveur lors de la récupération des listes.' });
   }
 });
-
-// --- Nouvelle Route: GET /api/lists/:listId ---
-// Récupère les détails d'une seule liste, si l'utilisateur y a accès
 app.get('/api/lists/:listId', async (req, res) => {
     const { listId } = req.params;
     const { userId } = req.query; // L'utilisateur qui demande
-
-    // Validations
     const targetListId = parseInt(listId, 10);
     if (isNaN(targetListId) || targetListId <= 0) {
         return res.status(400).json({ message: "L'ID de liste fourni dans l'URL est invalide." });
@@ -144,9 +174,7 @@ app.get('/api/lists/:listId', async (req, res) => {
     if (isNaN(requestingUserId) || requestingUserId <= 0) {
         return res.status(400).json({ message: "Le paramètre de requête 'userId' est requis et doit être un identifiant valide." });
     }
-
     try {
-        // Récupère les détails de la liste ET le nom du créateur en une seule requête
         const getListDetailsQuery = `
             SELECT
                 l.list_id, l.list_name, l.is_private, l.creator_id, l.created_at, l.updated_at,
@@ -156,32 +184,22 @@ app.get('/api/lists/:listId', async (req, res) => {
             WHERE l.list_id = $1;
         `;
         const listResult = await pool.query(getListDetailsQuery, [targetListId]);
-
-        // 1. Vérifier si la liste existe
         if (listResult.rowCount === 0) {
             return res.status(404).json({ message: `La liste avec l'ID ${targetListId} n'existe pas.` });
         }
-
         const listData = listResult.rows[0];
-
-        // 2. Vérifier les permissions d'accès
         const isAllowed = !listData.is_private || listData.creator_id === requestingUserId;
-
         if (!isAllowed) {
             console.log(`Tentative d'accès non autorisée à la liste privée ID ${targetListId} par l'utilisateur ID ${requestingUserId}`);
             return res.status(403).json({ message: "Accès non autorisé. Cette liste est privée." });
         }
-
-        // 3. Si autorisé, renvoyer les détails de la liste
         console.log(`Accès autorisé aux détails de la liste ID ${targetListId} pour l'utilisateur ID ${requestingUserId}.`);
         res.status(200).json(listData);
-
     } catch (error) {
         console.error(`Erreur sur la route GET /api/lists/${targetListId}?userId=${requestingUserId} :`, error.message);
         res.status(500).json({ message: 'Erreur interne du serveur lors de la récupération des détails de la liste.' });
     }
 });
-
 app.put('/api/lists/:listId', async (req, res) => {
     const { listId } = req.params;
     const { user_id, list_name, is_private } = req.body;
@@ -488,6 +506,9 @@ app.delete('/api/items/:itemId', async (req, res) => {
 });
 // --- Fin API Items ---
 
+// Démarrage du serveur
 app.listen(port, () => {
-  console.log(`Serveur démarré et écoute sur http://localhost:${port}`);
+  // Utilise 0.0.0.0 pour écouter sur toutes les interfaces disponibles (utile pour Render)
+  // Le message de log peut rester localhost pour la clarté, mais le serveur écoute plus largement.
+  console.log(`Serveur démarré et écoute sur le port ${port}`);
 });
